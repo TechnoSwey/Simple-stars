@@ -2,7 +2,7 @@
 ErneStars Bot — чат-бот.
 Зависимости: aiogram, aiosqlite, aiohttp, python-dotenv, apscheduler
 """
-import asyncio, logging, os, uuid
+import asyncio, logging, os, uuid, traceback
 from time import time
 from datetime import date, timedelta
 from typing import Dict, Optional
@@ -430,35 +430,40 @@ async def about(msg: Message):
 # ─── Профиль ──────────────────────────────────────────────
 @r.message(F.text == "👤 Профиль")
 async def profile(msg: Message, bot: Bot):
-    log.info(f"Профиль вызван пользователем {msg.from_user.id}")
-    ok, sub_kb = await check_subs(bot, msg.from_user.id)
-    if not ok: 
-        return await msg.answer("Подпишитесь на обязательные каналы!", reply_markup=sub_kb)
-    u = await get_user(msg.from_user.id)
-    if not u:
-        log.warning(f"Пользователь {msg.from_user.id} не найден в БД")
-        return await msg.answer("❌ Ошибка: пользователь не найден. Напишите /start")
-    rank, lnum, xp, nxp, pct = calculate_level_info(u["xp"])
-    refs = (await q("SELECT COUNT(*) as c FROM referrals WHERE referrer_id=?", (u["user_id"],), "one"))["c"]
-    achs = len(await q("SELECT key FROM achievements WHERE user_id=?", (u["user_id"],), "all") or [])
-    vip_s = "👑 Активен" if await is_vip(u["user_id"]) else "❌ Нет"
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📅 Ежедневный бонус", callback_data="daily")],
-        [InlineKeyboardButton(text="🎟 Промокод",          callback_data="promo_enter"),
-         InlineKeyboardButton(text="🏆 Достижения",        callback_data="achievements")],
-    ])
-    await msg.answer(
-        f"👤 <b>Профиль</b>\n\n"
-        f"🆔 <code>{u['user_id']}</code> | @{u.get('username') or '—'}\n"
-        f"⭐ Stars: <code>{u['stars']:.2f}</code>\n"
-        f"🏆 Ур. {lnum} — {rank}\n"
-        f"⚡ XP: <code>{xp}/{nxp}</code> ({pct}%)\n"
-        f"👥 Рефералов: <code>{refs}</code>\n"
-        f"🎖 Достижений: <code>{achs}</code>\n"
-        f"🔥 Streak: <code>{u['daily_streak']}</code> дн.\n"
-        f"🛡 Защита: <code>{u.get('streak_protection', 0)}</code> шт.\n"
-        f"👑 VIP: {vip_s}",
-        reply_markup=kb, parse_mode="HTML")
+    try:
+        log.info(f"Профиль вызван пользователем {msg.from_user.id}")
+        ok, sub_kb = await check_subs(bot, msg.from_user.id)
+        if not ok: 
+            return await msg.answer("Подпишитесь на обязательные каналы!", reply_markup=sub_kb)
+        u = await get_user(msg.from_user.id)
+        if not u:
+            log.warning(f"Пользователь {msg.from_user.id} не найден в БД")
+            return await msg.answer("❌ Ошибка: пользователь не найден. Напишите /start")
+        rank, lnum, xp, nxp, pct = calculate_level_info(u["xp"])
+        refs = (await q("SELECT COUNT(*) as c FROM referrals WHERE referrer_id=?", (u["user_id"],), "one"))["c"]
+        achs = len(await q("SELECT key FROM achievements WHERE user_id=?", (u["user_id"],), "all") or [])
+        vip_s = "👑 Активен" if await is_vip(u["user_id"]) else "❌ Нет"
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="📅 Ежедневный бонус", callback_data="daily")],
+            [InlineKeyboardButton(text="🎟 Промокод",          callback_data="promo_enter"),
+             InlineKeyboardButton(text="🏆 Достижения",        callback_data="achievements")],
+        ])
+        await msg.answer(
+            f"👤 <b>Профиль</b>\n\n"
+            f"🆔 <code>{u['user_id']}</code> | @{u['username'] or '—'}\n"
+            f"⭐ Stars: <code>{u['stars']:.2f}</code>\n"
+            f"🏆 Ур. {lnum} — {rank}\n"
+            f"⚡ XP: <code>{xp}/{nxp}</code> ({pct}%)\n"
+            f"👥 Рефералов: <code>{refs}</code>\n"
+            f"🎖 Достижений: <code>{achs}</code>\n"
+            f"🔥 Streak: <code>{u['daily_streak']}</code> дн.\n"
+            f"🛡 Защита: <code>{u['streak_protection'] or 0}</code> шт.\n"
+            f"👑 VIP: {vip_s}",
+            reply_markup=kb, parse_mode="HTML")
+    except Exception as e:
+        log.error(f"ОШИБКА В ПРОФИЛЕ: {e}")
+        log.error(traceback.format_exc())
+        await msg.answer(f"❌ Ошибка: {e}")
 
 # ─── Ежедневный бонус ─────────────────────────────────────
 @r.callback_query(F.data == "daily")
@@ -474,7 +479,7 @@ async def daily(cb: CallbackQuery):
     if u["last_daily_date"]:
         prev = date.fromisoformat(u["last_daily_date"])
         if prev == date.today() - timedelta(days=1): streak += 1
-        elif u.get("streak_protection", 0) > 0:
+        elif u["streak_protection"] > 0:
             protect_used = True
             await q("UPDATE users SET streak_protection=streak_protection-1 WHERE user_id=?", (uid,))
             streak += 1
@@ -993,7 +998,7 @@ async def adm_search_res(msg: Message, state: FSMContext):
     if not u: return await msg.answer("❌ Не найден.")
     rank, lnum, xp, _, _ = calculate_level_info(u["xp"])
     await msg.answer(
-        f"👤 <code>{u['user_id']}</code> | @{u.get('username') or '—'}\n"
+        f"👤 <code>{u['user_id']}</code> | @{u['username'] or '—'}\n"
         f"⭐{u['stars']:.2f} | Ур.{lnum} {rank}\n"
         f"VIP: {'Да' if await is_vip(u['user_id']) else 'Нет'} | "
         f"Бан: {'Да' if u['is_banned'] else 'Нет'}",
