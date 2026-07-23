@@ -318,7 +318,8 @@ def main_kb():
     rows = [
         [KeyboardButton(text="💰 Заработать"), KeyboardButton(text="👤 Профиль")],
         [KeyboardButton(text="🛒 Магазин"),    KeyboardButton(text="📊 Рейтинг")],
-        [KeyboardButton(text="📝 Свой канал"), KeyboardButton(text="ℹ️ О боте")],
+        [KeyboardButton(text="📝 Свой канал"), KeyboardButton(text="💸 Вывести")],
+        [KeyboardButton(text="ℹ️ О боте")],
     ]
     return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
 
@@ -429,10 +430,14 @@ async def about(msg: Message):
 # ─── Профиль ──────────────────────────────────────────────
 @r.message(F.text == "👤 Профиль")
 async def profile(msg: Message, bot: Bot):
+    log.info(f"Профиль вызван пользователем {msg.from_user.id}")
     ok, sub_kb = await check_subs(bot, msg.from_user.id)
-    if not ok: return await msg.answer("Подпишитесь на обязательные каналы!", reply_markup=sub_kb)
+    if not ok: 
+        return await msg.answer("Подпишитесь на обязательные каналы!", reply_markup=sub_kb)
     u = await get_user(msg.from_user.id)
-    if not u: return
+    if not u:
+        log.warning(f"Пользователь {msg.from_user.id} не найден в БД")
+        return await msg.answer("❌ Ошибка: пользователь не найден. Напишите /start")
     rank, lnum, xp, nxp, pct = calculate_level_info(u["xp"])
     refs = (await q("SELECT COUNT(*) as c FROM referrals WHERE referrer_id=?", (u["user_id"],), "one"))["c"]
     achs = len(await q("SELECT key FROM achievements WHERE user_id=?", (u["user_id"],), "all") or [])
