@@ -1,5 +1,5 @@
 """
-ErneStars Bot — всё в одном файле.
+ErneStars Bot — чат-бот.
 Зависимости: aiogram, aiosqlite, aiohttp, python-dotenv, apscheduler
 """
 import asyncio, logging, os, uuid
@@ -19,7 +19,7 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import (
     Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton,
-    ReplyKeyboardMarkup, KeyboardButton, TelegramObject, WebAppInfo,
+    ReplyKeyboardMarkup, KeyboardButton, TelegramObject,
 )
 import aiohttp
 import aiosqlite
@@ -37,10 +37,8 @@ ADMIN_ID           = int(os.getenv("ADMIN_ID", "0"))
 ADMIN_USERNAME     = os.getenv("ADMIN_USERNAME", "@admin")
 PRFLOW_API_KEY     = os.getenv("PRFLOW_API_KEY", "")
 PRFLOW_API_URL     = os.getenv("PRFLOW_API_URL", "https://piarflow.com/api")
-MINI_APP_URL       = os.getenv("MINI_APP_URL", "")
 PAYOUT_CHANNEL_ID  = os.getenv("PAYOUT_CHANNEL_ID", "0")
 PAYOUT_CHANNEL_URL = os.getenv("PAYOUT_CHANNEL_URL", "https://t.me/")
-API_PORT           = int(os.getenv("API_PORT", "8080"))
 DB_PATH            = os.getenv("DB_PATH", "bot.db")
 
 MIN_WITHDRAW       = float(os.getenv("MIN_WITHDRAW_STARS", "15"))
@@ -322,8 +320,6 @@ def main_kb():
         [KeyboardButton(text="🛒 Магазин"),    KeyboardButton(text="📊 Рейтинг")],
         [KeyboardButton(text="📝 Свой канал"), KeyboardButton(text="ℹ️ О боте")],
     ]
-    if MINI_APP_URL:
-        rows.append([KeyboardButton(text="🌐 Мини-приложение", web_app=WebAppInfo(url=MINI_APP_URL))])
     return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
 
 def wd_kb(): return InlineKeyboardMarkup(inline_keyboard=[
@@ -568,7 +564,6 @@ async def check_task(cb: CallbackQuery):
     task = await q("SELECT * FROM tasks WHERE task_hash=?", (th,), "one")
     if not task: return await cb.answer("❌ Задание не найдено.", show_alert=True)
     stars = float(stars_s); xp = int(xp_s)
-    # Применить множитель ивента
     if await get_setting("event_active", "0") == "1":
         mult = float(await get_setting("event_multiplier", "1"))
         stars = round(stars * mult, 2); xp = int(xp * mult)
@@ -1121,116 +1116,6 @@ async def do_broadcast(bot: Bot, from_chat: int, msg_id: int, kb):
     await status.edit_text(f"🎉 Рассылка завершена!\n✅ {ok} | ❌ {err}")
 
 # ══════════════════════════════════════════════════════════
-# МИНИ-ПРИЛОЖЕНИЕ API (встроенный HTTP сервер)
-# ══════════════════════════════════════════════════════════
-
-async def handle_auth(req: aiohttp.web.Request):
-    try:
-        data = await req.json()
-        uid  = int(data.get("user_id", 0))
-        fname = data.get("first_name","")
-        uname = data.get("username")
-        if uid: await get_or_create_user(uid, uname, fname)
-        u = await get_user(uid)
-        return aiohttp.web.json_response({"user_id": uid, "first_name": fname, "stars": u["stars"] if u else 0})
-    except Exception as e:
-        return aiohttp.web.json_response({"error": str(e)}, status=400)
-
-async def handle_profile(req: aiohttp.web.Request):
-    uid = int(req.rel_url.query.get("user_id", 0))
-    u   = await get_user(uid)
-    if not u: return aiohttp.web.json_response({"error":"not found"}, status=404)
-    cnt  = (await q("SELECT COUNT(*) as c FROM completions WHERE user_id=?", (uid,), "one"))["c"]
-    total= (await q("SELECT COALESCE(SUM(stars_earned),0) as s FROM completions WHERE user_id=?", (uid,), "one"))["s"]
-    return aiohttp.web.json_response({
-        "user_id": uid, "first_name": u["full_name"] or "", "stars": u["stars"],
-        "completed_tasks_count": cnt, "total_earned": total,
-    })
-
-async def handle_tasks(req: aiohttp.web.Request):
-    uid = int(req.rel_url.query.get("user_id", 0))
-    all_tasks = await q("SELECT * FROM tasks", fetch="all") or []
-    result = []
-    for t in all_tasks:
-        done = await task_completed(uid, t["task_hash"])
-        result.append({"id": hash(t["task_hash"]) % 2**31, "channel_link": t["channel_link"],
-                        "stars_reward": t["stars_reward"], "already_completed": done})
-    return aiohttp.web.json_response(result)
-
-async def handle_verify(req: aiohttp.web.Request):
-    try:
-        task_id = int(req.match_info.get("task_id","0"))
-        data    = await req.json()
-        uid     = int(data.get("user_id", 0))
-        # Ищем задание по «псевдо-id»
-        all_tasks = await q("SELECT * FROM tasks", fetch="all") or []
-        task = None
-        for t in all_tasks:
-            if hash(t["task_hash"]) % 2**31 == task_id: task = t; break
-        if not task: return aiohttp.web.json_response({"success": False, "message":"Задание не найдено"})
-        if await task_completed(uid, task["task_hash"]):
-            return aiohttp.web.json_response({"success": False, "message":"Уже выполнено"})
-        ok = await pf_check_sub(uid, task["channel_link"])
-        if ok:
-            await save_completion(uid, task["task_hash"], task["channel_link"],
-                                  task["stars_reward"], task["xp_reward"])
-            return aiohttp.web.json_response({"success": True, "stars_earned": task["stars_reward"]})
-        return aiohttp.web.json_response({"success": False, "message":"Не подписаны"})
-    except Exception as e:
-        return aiohttp.web.json_response({"success": False, "message": str(e)}, status=400)
-
-async def handle_requests(req: aiohttp.web.Request):
-    uid  = int(req.rel_url.query.get("user_id", 0))
-    rows = await q("SELECT * FROM task_requests WHERE requester_id=? ORDER BY id DESC", (uid,), "all") or []
-    return aiohttp.web.json_response([dict(r) for r in rows])
-
-async def handle_create_request(req: aiohttp.web.Request):
-    try:
-        data  = await req.json()
-        uid   = int(data["user_id"])
-        link  = data["channel_link"]
-        cnt   = int(data["completions_total"])
-        price = float(data["price_per_completion"])
-        total = round(cnt * price, 2)
-        u = await get_user(uid)
-        if not u or u["stars"] < total:
-            return aiohttp.web.json_response({"error":"insufficient_stars"}, status=400)
-        await update_balance(uid, -total)
-        rid = await q("INSERT INTO task_requests(requester_id,channel_link,completions_total,price_per_completion) VALUES(?,?,?,?)",
-                      (uid, link, cnt, price))
-        return aiohttp.web.json_response({"id": rid, "status":"pending_admin_check"})
-    except Exception as e:
-        return aiohttp.web.json_response({"error": str(e)}, status=400)
-
-async def handle_stats(_req):
-    total = (await q("SELECT COUNT(*) as c FROM users", fetch="one"))["c"]
-    paid  = (await q("SELECT COALESCE(SUM(stars_amount),0) as s FROM withdrawals WHERE status='approved'", fetch="one"))["s"]
-    cnt   = (await q("SELECT COUNT(*) as c FROM tasks", fetch="one"))["c"]
-    stars = float(await get_setting("task_stars", str(DEFAULT_TASK_STARS)))
-    return aiohttp.web.json_response({"total_users": total, "total_paid": paid,
-                                       "stars_per_subscription": stars, "active_tasks_count": cnt})
-
-def make_api_app():
-    app = aiohttp.web.Application()
-    cors_mw = lambda f: f  # CORS
-    app.router.add_post("/api/miniapp/auth",           handle_auth)
-    app.router.add_get( "/api/miniapp/profile",        handle_profile)
-    app.router.add_get( "/api/miniapp/tasks",          handle_tasks)
-    app.router.add_post("/api/miniapp/tasks/{task_id}/verify", handle_verify)
-    app.router.add_get( "/api/miniapp/requests",       handle_requests)
-    app.router.add_post("/api/miniapp/requests",       handle_create_request)
-    app.router.add_get( "/api/miniapp/stats",          handle_stats)
-
-    @app.middleware
-    async def cors(req, handler):
-        resp = await handler(req)
-        resp.headers["Access-Control-Allow-Origin"] = "*"
-        resp.headers["Access-Control-Allow-Headers"] = "Content-Type"
-        return resp
-
-    return app
-
-# ══════════════════════════════════════════════════════════
 # МОНИТОРИНГ (APScheduler)
 # ══════════════════════════════════════════════════════════
 
@@ -1300,15 +1185,6 @@ async def main():
     scheduler.add_job(verify_requests,    "interval", minutes=5, args=[bot])
     scheduler.start()
     log.info("Планировщик запущен.")
-
-    # Запускаем API-сервер в фоне
-    if MINI_APP_URL:
-        api_app     = make_api_app()
-        runner      = aiohttp.web.AppRunner(api_app)
-        await runner.setup()
-        site        = aiohttp.web.TCPSite(runner, "0.0.0.0", API_PORT)
-        await site.start()
-        log.info(f"API-сервер запущен на порту {API_PORT}")
 
     log.info("Бот запущен!")
     await dp.start_polling(bot)
